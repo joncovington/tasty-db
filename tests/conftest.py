@@ -15,6 +15,12 @@ from tastydb.matching import rebuild_lots
 _ids = itertools.count(1000)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_keyring(monkeypatch):
+    """Tests must never read the developer's real Credential Manager entries."""
+    monkeypatch.setenv("TASTYDB_KEYRING", "off")
+
+
 def make_txn(
     *,
     txn_type="Trade",

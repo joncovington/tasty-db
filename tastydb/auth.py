@@ -28,8 +28,9 @@ class TokenManager:
     def __init__(self, config: Config, session: requests.Session | None = None):
         if not config.has_credentials:
             raise AuthError(
-                "Missing credentials: set TT_CLIENT_SECRET and TT_REFRESH_TOKEN "
-                "(see README for how to create an OAuth app and personal grant)."
+                "Missing credentials: store them in Windows Credential Manager "
+                "(cherrypick-broker, same as cherrypick) or set TT_CLIENT_SECRET and "
+                "TT_REFRESH_TOKEN (see README for how to create an OAuth app and personal grant)."
             )
         self._config = config
         self._session = session or requests.Session()

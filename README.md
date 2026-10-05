@@ -46,7 +46,14 @@ TastyTrade's API uses OAuth2. One-time setup:
 3. Create a **personal grant** for it — this gives you a long-lived
    **refresh token**.
 
-Then provide both to tasty-db, either as environment variables:
+On Windows (and any OS with a keyring), tasty-db reads both from the system
+keyring by default, using the same entry as cherrypick: service
+`cherrypick-broker`, entries `production:client_secret` and
+`production:refresh_token`. If cherrypick is already set up, there is nothing
+more to do. Keyring lookup applies to prod only (not `--sandbox`) and can be
+disabled with `TASTYDB_KEYRING=off`.
+
+Otherwise, or to override the keyring, provide both as environment variables:
 
 ```sh
 export TT_CLIENT_SECRET=...

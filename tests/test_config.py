@@ -61,3 +61,63 @@ def test_explicit_db_url_overrides_per_environment_default(monkeypatch):
     monkeypatch.setenv("TASTYDB_DB_URL", "sqlite:///custom.sqlite3")
     config = Config(env="sandbox")
     assert config.resolved_db_url == "sqlite:///custom.sqlite3"
+
+
+def _fake_keyring(monkeypatch, store):
+    import keyring
+
+    calls = []
+
+    def get_password(service, entry):
+        calls.append((service, entry))
+        return store.get((service, entry))
+
+    monkeypatch.setattr(keyring, "get_password", get_password)
+    monkeypatch.setenv("TASTYDB_KEYRING", "on")
+    return calls
+
+
+def test_credentials_fall_back_to_cherrypick_keyring_entry(monkeypatch):
+    monkeypatch.delenv("TT_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("TT_REFRESH_TOKEN", raising=False)
+    calls = _fake_keyring(monkeypatch, {
+        ("cherrypick-broker", "production:client_secret"): "kr-secret",
+        ("cherrypick-broker", "production:refresh_token"): "kr-token",
+    })
+    config = Config()
+    assert calls == []  # lazy: constructing a Config never touches the keyring
+    assert config.has_credentials
+    assert (config.client_secret, config.refresh_token) == ("kr-secret", "kr-token")
+
+
+def test_env_beats_keyring_and_sandbox_skips_it(monkeypatch):
+    monkeypatch.setenv("TT_CLIENT_SECRET", "env-secret")
+    monkeypatch.delenv("TT_REFRESH_TOKEN", raising=False)
+    calls = _fake_keyring(monkeypatch, {
+        ("cherrypick-broker", "production:client_secret"): "kr-secret",
+        ("cherrypick-broker", "production:refresh_token"): "kr-token",
+    })
+    config = Config()
+    assert config.has_credentials
+    assert config.client_secret == "env-secret" and config.refresh_token == "kr-token"
+
+    sandbox = Config()
+    sandbox.client_secret = sandbox.refresh_token = None
+    sandbox.env = "sandbox"
+    n = len(calls)
+    assert not sandbox.has_credentials  # prod tokens are never offered to the cert env
+    assert len(calls) == n
+
+
+def test_keyring_failure_degrades_to_no_credentials(monkeypatch):
+    import keyring
+
+    monkeypatch.delenv("TT_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("TT_REFRESH_TOKEN", raising=False)
+    monkeypatch.setenv("TASTYDB_KEYRING", "on")
+
+    def boom(*a):
+        raise keyring.errors.NoKeyringError("none")
+
+    monkeypatch.setattr(keyring, "get_password", boom)
+    assert not Config().has_credentials
