@@ -38,6 +38,14 @@ log = logging.getLogger(__name__)
 NO_GROUP = "(none)"
 
 
+def _utf8_stdio() -> None:
+    """Output uses non-ASCII (→, —). On Windows, redirected stdout/stderr default
+    to the ANSI code page (cp1252), which can't encode them and crashes mid-run."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and (stream.encoding or "").lower() != "utf-8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 class App:
     def __init__(self, config: Config):
         self.config = config
@@ -70,6 +78,7 @@ class App:
 @click.option("-v", "--verbose", is_flag=True, help="Debug logging")
 @click.pass_context
 def main(ctx: click.Context, db_url: str | None, env_file: str, sandbox: bool, verbose: bool):
+    _utf8_stdio()
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
