@@ -228,3 +228,34 @@ def test_dashboard_performance_page(tmp_path):
     old = client.get("/performance?start=2030-01-01", follow_redirects=False)
     assert old.status_code == 301
     assert old.headers["location"] == "/?start=2030-01-01"
+
+
+def test_deposit_posting_after_zero_eod_snapshot_is_a_contribution(session):
+    # Real pattern: the account's first EOD snapshot is $0 because the funding
+    # deposit, dated the same day, posted after the snapshot was taken.
+    snap(session, "2026-05-13", 0)
+    snap(session, "2026-05-14", 15499.30)
+    snap(session, "2026-10-05", 15788.94)
+    deposit(session, "2026-05-13", 15499.30)
+    session.commit()
+
+    pr = period_returns(session, ACCT)
+    assert pr.net_flows == Decimal("15499.3")
+    assert pr.pnl == Decimal("289.64")  # not the whole balance
+    assert float(pr.twr) == pytest.approx(15788.94 / 15499.30 - 1, abs=1e-6)
+    assert pr.xirr is not None and pr.xirr > 0  # flows now go both ways
+
+    index = twr_index(session, ACCT)
+    assert index[-1][1] == Decimal("101.8687")
+
+
+def test_same_day_flow_stays_outside_a_funded_base(session):
+    # A funded base already includes its day's flows (EOD convention).
+    snap(session, "2026-01-01", 2000)
+    snap(session, "2026-01-10", 2000)
+    deposit(session, "2026-01-01", 1000.0)
+    session.commit()
+
+    pr = period_returns(session, ACCT)
+    assert pr.net_flows == Decimal("0")
+    assert pr.pnl == Decimal("0")
