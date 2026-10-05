@@ -234,3 +234,25 @@ def test_dashboard_filters_narrow_results(tmp_path):
     marks_refresh = client.post("/marks/refresh", data={"back": "/positions"}, follow_redirects=True)
     assert marks_refresh.status_code == 200
     assert "no API credentials" in marks_refresh.text
+
+
+def test_dashboard_rejects_hostile_requests(tmp_path):
+    client = _dashboard_client(_vertical_payloads(), tmp_path)
+
+    # DNS rebinding: unknown Host header
+    assert client.get("/realized", headers={"host": "evil.example"}).status_code == 400
+    # cross-site POST
+    cross = client.post("/marks/refresh", data={"back": "/positions"},
+                        headers={"origin": "https://evil.example"}, follow_redirects=False)
+    assert cross.status_code == 403
+    same = client.post("/marks/refresh", data={"back": "/positions"},
+                       headers={"origin": "http://127.0.0.1:8787"}, follow_redirects=False)
+    assert same.status_code == 303
+
+    # open redirect: foreign / protocol-relative targets fall back to /positions
+    for bad in ("https://evil.example/x", "//evil.example", "/\\evil.example", "evil"):
+        r = client.post("/marks/refresh", data={"back": bad}, follow_redirects=False)
+        assert r.headers["location"].startswith("/positions?msg="), bad
+    # message is URL-encoded
+    r = client.post("/marks/refresh", data={"back": "/positions"}, follow_redirects=False)
+    assert " " not in r.headers["location"]

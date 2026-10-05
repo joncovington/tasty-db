@@ -7,16 +7,18 @@ for unrealized PnL. Sync/process stay in the CLI.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..analytics import (
     credits_collected,
@@ -42,6 +44,24 @@ from .. import __version__
 log = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
+
+# Host headers the dashboard answers to. Anything else (DNS rebinding) is
+# rejected; extend with TASTYDB_ALLOWED_HOSTS=host1,host2 when serving on a LAN.
+_DEFAULT_ALLOWED_HOSTS = ("localhost", "127.0.0.1", "testserver")
+
+
+def _allowed_hosts() -> list[str]:
+    extra = os.environ.get("TASTYDB_ALLOWED_HOSTS", "")
+    return [*_DEFAULT_ALLOWED_HOSTS, *(h.strip() for h in extra.split(",") if h.strip())]
+
+
+def _safe_back(back: str, default: str = "/positions") -> str:
+    """Only same-site absolute paths: no scheme, no `//host`, no backslashes."""
+    if not back.startswith("/") or back.startswith("//") or "\\" in back:
+        return default
+    if any(ord(c) < 32 for c in back):
+        return default
+    return back
 
 
 def _money(value) -> str:
@@ -92,6 +112,17 @@ def create_app(config: Config) -> FastAPI:
     session_factory = make_session_factory(engine)
 
     app = FastAPI(title="tasty-db dashboard", version=__version__)
+    hosts = _allowed_hosts()
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+    @app.middleware("http")
+    async def reject_cross_origin_writes(request: Request, call_next):
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin is not None and urlsplit(origin).hostname not in hosts:
+                return PlainTextResponse("cross-origin request rejected", status_code=403)
+        return await call_next(request)
+
     app.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
     templates = Jinja2Templates(directory=_HERE / "templates")
     templates.env.filters["money"] = _money
@@ -238,8 +269,9 @@ def create_app(config: Config) -> FastAPI:
         except Exception as exc:  # noqa: BLE001 - surface, don't 500
             log.exception("marks refresh failed")
             msg = f"marks refresh failed: {exc}"
+        back = _safe_back(back)
         sep = "&" if "?" in back else "?"
-        return RedirectResponse(f"{back}{sep}msg={msg}", status_code=303)
+        return RedirectResponse(f"{back}{sep}{urlencode({'msg': msg})}", status_code=303)
 
     @app.get("/strategies")
     def strategies_view(request: Request, underlying: str | None = None):
