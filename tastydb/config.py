@@ -1,8 +1,13 @@
 """Runtime configuration, sourced from environment variables (optionally
 seeded from a .env file in the working directory).
 
-Required for API access (create these at my.tastytrade.com -> Manage -> My Profile
--> API -> OAuth Applications; see README):
+Credentials come from, in order: TT_CLIENT_SECRET / TT_REFRESH_TOKEN in the
+environment (or .env), then the OS keyring (Windows Credential Manager) under the
+same entry cherrypick uses -- service "cherrypick-broker", entries
+"production:client_secret" and "production:refresh_token". The keyring is only
+consulted for prod (those are production tokens) and can be turned off with
+TASTYDB_KEYRING=off. Create the tokens at my.tastytrade.com -> Manage -> My Profile
+-> API -> OAuth Applications (see README):
 
     TT_CLIENT_SECRET   OAuth application client secret
     TT_REFRESH_TOKEN   refresh token from a personal grant
@@ -20,6 +25,7 @@ Other settings:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +35,12 @@ SANDBOX_BASE_URL = "https://api.cert.tastyworks.com"
 
 PROD_DEFAULT_DB_URL = "sqlite:///tastydb.sqlite3"
 SANDBOX_DEFAULT_DB_URL = "sqlite:///tastydb-sandbox.sqlite3"
+
+# Shared with cherrypick, so one broker login serves both tools.
+KEYRING_SERVICE = "cherrypick-broker"
+KEYRING_ENTRY_PREFIX = "production"
+
+log = logging.getLogger(__name__)
 
 USER_AGENT = "tasty-db/0.1"  # tastytrade rejects requests without a User-Agent
 
@@ -62,6 +74,19 @@ def load_dotenv(path: str | Path = ".env") -> dict[str, str]:
     return applied
 
 
+def keyring_secret(name: str) -> str | None:
+    """Read `name` from the OS keyring; None if absent, disabled, or unreadable."""
+    if os.environ.get("TASTYDB_KEYRING", "").lower() in ("off", "0", "false", "no"):
+        return None
+    try:
+        import keyring
+
+        return keyring.get_password(KEYRING_SERVICE, f"{KEYRING_ENTRY_PREFIX}:{name}")
+    except Exception as exc:  # noqa: BLE001 - no backend / locked vault: fall back to env only
+        log.debug("keyring read failed for %s: %s", name, exc)
+        return None
+
+
 @dataclass
 class Config:
     # None means "use the per-environment default" — resolved lazily by
@@ -77,6 +102,7 @@ class Config:
     # Don't auto-expire lots until this many days past expiration, so a late-posting
     # settlement/assignment transaction can still claim them.
     expiration_grace_days: int = 4
+    _keyring_tried: bool = field(default=False, repr=False)
 
     @property
     def base_url(self) -> str:
@@ -90,6 +116,18 @@ class Config:
             return self.db_url
         return SANDBOX_DEFAULT_DB_URL if self.env == "sandbox" else PROD_DEFAULT_DB_URL
 
+    def load_keyring_credentials(self) -> None:
+        """Fill any missing secret from the keyring (prod only; env values win).
+        Done lazily, once, so --sandbox is known and offline commands never touch it."""
+        if self._keyring_tried or self.env == "sandbox":
+            return
+        self._keyring_tried = True
+        if not self.client_secret:
+            self.client_secret = keyring_secret("client_secret")
+        if not self.refresh_token:
+            self.refresh_token = keyring_secret("refresh_token")
+
     @property
     def has_credentials(self) -> bool:
+        self.load_keyring_credentials()
         return bool(self.client_secret and self.refresh_token)
