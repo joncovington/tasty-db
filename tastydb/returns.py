@@ -17,8 +17,11 @@ V_end - V_start - net external flows.
 
 Conventions: the window base is the first snapshot >= start (its NLV already
 contains that day's flows — EOD convention), the window close is the last
-snapshot <= end. Links where the base NLV is not positive are skipped (a
-deposit-funded restart from zero has no defined return). Rates are ratios,
+snapshot <= end. Exception: when the base NLV is not positive (account not yet
+funded), flows dated on the base day count inside the window -- the broker takes
+the EOD snapshot before a same-day deposit posts, so a $0 base never contains it.
+Links where the base NLV is not positive are skipped (a deposit-funded restart
+from zero has no defined return). Rates are ratios,
 not money — reported to 6 decimal places, never forced to money quantization.
 """
 
@@ -93,6 +96,19 @@ def nlv_series(
     if end is not None:
         series = [p for p in series if p[0] <= end]
     return series
+
+
+def _window_flows(
+    session: Session, account: str | None, base: tuple[date, Decimal], end: date
+) -> list[CashFlow]:
+    """External flows in (d0, end], or [d0, end] when the base is unfunded:
+    a non-positive base NLV cannot already contain a same-day deposit."""
+    d0, v0 = base
+    lo_inclusive = v0 <= 0
+    return [
+        f for f in external_flows(session, account)
+        if (d0 <= f.date if lo_inclusive else d0 < f.date) and f.date <= end
+    ]
 
 
 def _links(
@@ -175,7 +191,7 @@ def period_returns(
         )
 
     (d0, v0), (dn, vn) = series[0], series[-1]
-    flows = [f for f in external_flows(session, account) if d0 < f.date <= dn]
+    flows = _window_flows(session, account, series[0], dn)
     net = sum((f.amount for f in flows), Decimal("0"))
     pnl = (vn - v0 - net).quantize(Q_MONEY)
 
@@ -213,7 +229,7 @@ def twr_index(
     if not series:
         return []
     d0, dn = series[0][0], series[-1][0]
-    flows = [f for f in external_flows(session, account) if d0 < f.date <= dn]
+    flows = _window_flows(session, account, series[0], dn)
     index = [(d0, Decimal("100"))]
     growth = Decimal("1")
     for day, factor in _links(series, flows):
